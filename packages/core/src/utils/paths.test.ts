@@ -212,17 +212,19 @@ describe('unescapePath', () => {
     );
   });
 
-  it.skipIf(!isWindows)(
-    'unescapes forward-slash Windows references without corrupting separators',
-    () => {
+  it('preserves @-prefixed mixed Windows separators for the reference consumer', () => {
+    const spy = vi.spyOn(os, 'platform').mockReturnValue('win32');
+    try {
+      expect(unescapePath('@C:/repo\\#docs\\readme.md')).toBe(
+        '@C:/repo\\#docs\\readme.md',
+      );
       expect(unescapePath('@C:/Program\\ Files/Qwen/qwen.exe')).toBe(
-        '@C:/Program Files/Qwen/qwen.exe',
+        '@C:/Program\\ Files/Qwen/qwen.exe',
       );
-      expect(unescapePath('@//server/share/My\\ File.txt')).toBe(
-        '@//server/share/My File.txt',
-      );
-    },
-  );
+    } finally {
+      spy.mockRestore();
+    }
+  });
 
   describe.skipIf(isWindows)('on Unix', () => {
     it('should unescape spaces', () => {

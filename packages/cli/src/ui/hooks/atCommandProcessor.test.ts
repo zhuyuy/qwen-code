@@ -719,6 +719,106 @@ describe('handleAtCommand', () => {
     },
   );
 
+  it.runIf(process.platform === 'win32')(
+    'prefers an existing mixed-separator path over its decoded sibling',
+    async () => {
+      const raw = await createTestFile(
+        path.join(testRootDir, 'repo', '#docs', 'readme.md'),
+        'raw path',
+      );
+      await createTestFile(
+        path.join(testRootDir, 'repo#docs', 'readme.md'),
+        'wrong sibling',
+      );
+      const mixed = raw.replaceAll('\\', '/').replace('/#docs/', '\\#docs\\');
+      const result = await handleAtCommand({
+        query: '@' + mixed,
+        config: mockConfig,
+        onDebugMessage: mockOnDebugMessage,
+        messageId: 127,
+        signal: abortController.signal,
+      });
+      expect(result.processedQuery).toContainEqual({ text: 'raw path' });
+      expect(result.processedQuery).not.toContainEqual({
+        text: 'wrong sibling',
+      });
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'does not replace an ignored raw path with a decoded sibling',
+    async () => {
+      const raw = await createTestFile(
+        path.join(testRootDir, 'repo', '#docs', 'readme.md'),
+        'ignored raw',
+      );
+      await createTestFile(
+        path.join(testRootDir, 'repo#docs', 'readme.md'),
+        'wrong sibling',
+      );
+      const service = mockConfig.getFileService();
+      vi.spyOn(service, 'shouldIgnoreFile').mockImplementation(
+        (candidate) =>
+          candidate.includes('#docs') && !candidate.includes('repo#docs'),
+      );
+      vi.spyOn(mockConfig, 'getFileService').mockReturnValue(service);
+      const mixed = raw.replaceAll('\\', '/').replace('/#docs/', '\\#docs\\');
+      const result = await handleAtCommand({
+        query: '@' + mixed,
+        config: mockConfig,
+        onDebugMessage: mockOnDebugMessage,
+        messageId: 129,
+        signal: abortController.signal,
+      });
+      expect(result.processedQuery).not.toContainEqual({
+        text: 'wrong sibling',
+      });
+      expect(result.processedQuery).not.toContainEqual({ text: 'ignored raw' });
+      expect(result.filesRead ?? []).toHaveLength(0);
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'resolves an escaped workspace root without treating it as a policy rejection',
+    async () => {
+      const nestedRoot = path.join(testRootDir, 'space root');
+      const file = await createTestFile(
+        path.join(nestedRoot, 'file.txt'),
+        'inside root',
+      );
+      const workspace = mockConfig.getWorkspaceContext();
+      vi.spyOn(workspace, 'getDirectories').mockReturnValue([nestedRoot]);
+      vi.spyOn(workspace, 'isPathWithinWorkspace').mockImplementation(
+        (candidate) =>
+          path.resolve(nestedRoot, candidate).startsWith(nestedRoot + path.sep),
+      );
+      vi.spyOn(mockConfig, 'getWorkspaceContext').mockReturnValue(workspace);
+      const result = await handleAtCommand({
+        query: formatClipboardFileReference(file),
+        config: mockConfig,
+        onDebugMessage: mockOnDebugMessage,
+        messageId: 129,
+        signal: abortController.signal,
+      });
+      expect(result.processedQuery).toContainEqual({ text: 'inside root' });
+    },
+  );
+
+  it('resolves an escaped relative file reference', async () => {
+    await createTestFile(
+      path.join(testRootDir, 'docs', 'my image.txt'),
+      'relative path',
+    );
+    const result = await handleAtCommand({
+      query: '@docs/my\\ image.txt',
+      config: mockConfig,
+      onDebugMessage: mockOnDebugMessage,
+      messageId: 128,
+      signal: abortController.signal,
+    });
+    expect(result.processedQuery).toContainEqual({ text: 'relative path' });
+  });
+
   it('should handle multiple @file references', async () => {
     const content1 = 'Content file1';
     const file1Path = await createTestFile(

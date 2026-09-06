@@ -71,6 +71,10 @@ const { mockFsStat, mockFsMkdir, mockFsCopyFile } = vi.hoisted(() => ({
   mockFsCopyFile: vi.fn(),
 }));
 
+vi.mock('../utils/clipboard-paste-directory.js', () => ({
+  getClipboardPasteDirectory: async (root: string) =>
+    path.join(root, 'clipboard', 'paste-test'),
+}));
 vi.mock('../hooks/useShellHistory.js');
 vi.mock('../hooks/useCommandCompletion.js');
 vi.mock('../hooks/useInputHistory.js');
@@ -1807,14 +1811,16 @@ describe('InputPrompt', () => {
     it('promotes a copied image with shell metacharacters through an empty bracketed paste', async () => {
       const imagePath = 'C:\\Photos\\image(1).png';
       const normalizedImagePath = imagePath.replaceAll('\\', '/');
-      const expectedSource = path.isAbsolute(normalizedImagePath)
-        ? normalizedImagePath
-        : path.resolve(props.config.getTargetDir(), normalizedImagePath);
+      const expectedSource = path.resolve(
+        props.config.getTargetDir(),
+        normalizedImagePath,
+      );
       vi.mocked(clipboardUtils.readClipboardFiles).mockResolvedValue([
         imagePath,
       ]);
-      mockFsStat.mockResolvedValue({
-        isFile: () => true,
+      mockFsStat.mockImplementation(async (candidate: string) => {
+        if (candidate === expectedSource) return { isFile: () => true };
+        throw Object.assign(new Error('not found'), { code: 'ENOENT' });
       });
 
       const { stdin, unmount } = renderWithProviders(
@@ -1829,7 +1835,9 @@ describe('InputPrompt', () => {
       });
       expect(mockFsCopyFile).toHaveBeenCalledWith(
         expectedSource,
-        expect.stringMatching(/clipboard-\d+-0\.png$/),
+        expect.stringMatching(
+          /[\\/]paste-test[\\/]clipboard-[0-9a-f-]{36}\.png$/,
+        ),
       );
       expect(mockBuffer.insert).not.toHaveBeenCalled();
       unmount();
@@ -1858,7 +1866,9 @@ describe('InputPrompt', () => {
       expect(mockFsStat).toHaveBeenCalledWith(expectedSource);
       expect(mockFsCopyFile).toHaveBeenCalledWith(
         expectedSource,
-        expect.stringMatching(/clipboard-\d+-0\.png$/),
+        expect.stringMatching(
+          /[\\/]paste-test[\\/]clipboard-[0-9a-f-]{36}\.png$/,
+        ),
       );
       expect(mockBuffer.insert).not.toHaveBeenCalled();
       unmount();
@@ -1908,7 +1918,9 @@ describe('InputPrompt', () => {
       expect(mockFsStat).toHaveBeenNthCalledWith(2, expectedSources[1]);
       expect(mockFsCopyFile).toHaveBeenCalledWith(
         expectedSources[1],
-        expect.stringMatching(/clipboard-\d+-0\.png$/),
+        expect.stringMatching(
+          /[\\/]paste-test[\\/]clipboard-[0-9a-f-]{36}\.png$/,
+        ),
       );
       unmount();
     });
@@ -1940,7 +1952,9 @@ describe('InputPrompt', () => {
       await waitFor(() => {
         expect(mockFsCopyFile).toHaveBeenCalledWith(
           expectedSources[0],
-          expect.stringMatching(/clipboard-\d+-0\.png$/),
+          expect.stringMatching(
+            /[\\/]paste-test[\\/]clipboard-[0-9a-f-]{36}\.png$/,
+          ),
         );
       });
       expect(mockFsStat).toHaveBeenNthCalledWith(2, expectedSources[1]);
@@ -6521,6 +6535,24 @@ function clean(str: string | undefined): string {
 }
 
 describe('classifyPastedImagePaths', () => {
+  it.each([
+    ['win32', '@docs/my\\ image.png', 'docs/my image.png'],
+    ['linux', '/tmp/report\\#3.png', '/tmp/report\\#3.png'],
+  ] as const)(
+    'preserves the path dialect on %s: %s',
+    (platform, input, expected) => {
+      const spy = vi.spyOn(os, 'platform').mockReturnValue(platform);
+      try {
+        expect(classifyPastedImagePaths(input)).toEqual({
+          imagePaths: [expected],
+          allImages: true,
+        });
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
   it('recognizes a Windows image path read from the file clipboard', () => {
     const imagePath = 'C:\\Users\\mochi\\image(1).png';
     expect(classifyPastedImagePaths(imagePath)).toEqual({

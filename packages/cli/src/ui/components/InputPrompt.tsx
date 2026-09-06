@@ -37,7 +37,7 @@ import {
   type Config,
   Storage,
   createDebugLogger,
-  unescapePath,
+  unescapeShellSpecials,
 } from '@qwen-code/qwen-code-core';
 import {
   parseInputForHighlighting,
@@ -52,6 +52,9 @@ import {
   formatClipboardFileReference,
 } from '../utils/clipboardUtils.js';
 import * as path from 'node:path';
+import * as os from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { getClipboardPasteDirectory } from '../utils/clipboard-paste-directory.js';
 import * as fs from 'node:fs/promises';
 import { SCREEN_READER_USER_PREFIX } from '../textConstants.js';
 import { useShellFocusState } from '../contexts/ShellFocusContext.js';
@@ -129,23 +132,28 @@ const PASTED_IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp)$/i;
  *   `allImages` (true only when every token is such a path), so the caller can
  *   promote a pure image-path paste without swallowing mixed text.
  */
+function pastedImageTokens(pasted: string): string[] {
+  return pasted
+    .split(/ (?=@?\/|@?[A-Za-z]:[\\/])/)
+    .flatMap((part) => part.split('\n'))
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .map((token) => token.replace(/^@(["'])/, '@').replace(/^["']|["']$/g, ''));
+}
+
 export function classifyPastedImagePaths(pasted: string): {
   imagePaths: string[];
   allImages: boolean;
 } {
-  const tokens = pasted
-    .split(/ (?=@?\/|@?[A-Za-z]:[\\/])/)
-    .flatMap((part) => part.split('\n'))
-    .map((token) => token.trim())
-    .filter(Boolean);
+  const tokens = pastedImageTokens(pasted);
   const imagePaths: string[] = [];
   let allImages = tokens.length > 0;
   for (const token of tokens) {
-    const normalized = unescapePath(
-      token
-        .replace(/^@(["'])/, '@') // strip a quote after the `@` prefix
-        .replace(/^["']|["']$/g, ''), // strip surrounding quotes
-    ).replace(/^@/, ''); // strip the `@` reference prefix
+    const normalized = token.startsWith('@')
+      ? unescapeShellSpecials(token.slice(1))
+      : os.platform() === 'win32'
+        ? token
+        : token.replace(/\\ /g, ' ');
     if (PASTED_IMAGE_EXTENSIONS.test(normalized)) {
       imagePaths.push(normalized);
     } else {
@@ -841,25 +849,45 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
   // boundary on submit regardless of where it originally lived. Paths that
   // cannot be promoted remain as references in the input.
   const promotePastedImagePaths = useCallback(
-    async (imagePaths: string[], originalPasted: string) => {
+    async (
+      imagePaths: string[],
+      originalPasted: string,
+      originalTokens = imagePaths,
+    ) => {
       const cwd = config.getTargetDir();
-      const clipboardDir = path.join(Storage.getGlobalTempDir(), 'clipboard');
       const attachments: Attachment[] = [];
       const failedImagePaths: string[] = [];
-      for (const imagePath of imagePaths) {
-        const sourcePath = path.isAbsolute(imagePath)
-          ? imagePath
-          : path.resolve(cwd, imagePath);
+      for (const [index, imagePath] of imagePaths.entries()) {
+        const originalToken = originalTokens[index];
+        const rawPath = originalToken.replace(/^@/, '');
+        let sourcePath = path.resolve(cwd, rawPath);
+        const fallbackReference = originalToken.startsWith('@')
+          ? originalToken
+          : formatClipboardFileReference(rawPath);
         try {
-          const stats = await fs.stat(sourcePath);
+          let stats;
+          try {
+            stats = await fs.stat(sourcePath);
+          } catch (error) {
+            if (
+              (error as NodeJS.ErrnoException).code !== 'ENOENT' ||
+              rawPath === imagePath
+            ) {
+              throw error;
+            }
+            sourcePath = path.resolve(cwd, imagePath);
+            stats = await fs.stat(sourcePath);
+          }
           if (!stats.isFile()) {
-            failedImagePaths.push(imagePath);
+            failedImagePaths.push(fallbackReference);
             continue;
           }
-          await fs.mkdir(clipboardDir, { recursive: true });
+          const clipboardDir = await getClipboardPasteDirectory(
+            Storage.getGlobalTempDir(),
+          );
           const destPath = path.join(
             clipboardDir,
-            `clipboard-${Date.now()}-${attachments.length}${path.extname(sourcePath)}`,
+            `clipboard-${randomUUID()}${path.extname(sourcePath)}`,
           );
           await fs.copyFile(sourcePath, destPath);
           attachments.push({
@@ -868,19 +896,13 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
             filename: path.basename(destPath),
           });
         } catch {
-          failedImagePaths.push(imagePath);
+          failedImagePaths.push(fallbackReference);
         }
       }
       if (attachments.length > 0) {
-        cleanupOldClipboardImages(Storage.getGlobalTempDir()).catch(() => {
-          // Ignore cleanup errors
-        });
         setAttachments((prev) => [...prev, ...attachments]);
         if (failedImagePaths.length > 0) {
-          buffer.insert(
-            failedImagePaths.map(formatClipboardFileReference).join(' '),
-            { paste: false },
-          );
+          buffer.insert(failedImagePaths.join(' '), { paste: false });
         }
       } else {
         // Looked like image paths but none resolved — keep the original as text.
@@ -891,12 +913,20 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
   );
 
   const handleClipboardFilePaste = useCallback(
-    async (pasted: string, fileReferences: string) => {
-      const pastedImagePaths = classifyPastedImagePaths(pasted);
+    async (pasted: string, fileReferences: string, rawPaths?: string[]) => {
+      const pastedImagePaths = rawPaths
+        ? {
+            imagePaths: rawPaths,
+            allImages:
+              rawPaths.length > 0 &&
+              rawPaths.every((p) => PASTED_IMAGE_EXTENSIONS.test(p)),
+          }
+        : classifyPastedImagePaths(pasted);
       if (pastedImagePaths.allImages) {
         await promotePastedImagePaths(
           pastedImagePaths.imagePaths,
           fileReferences,
+          rawPaths ?? pastedImageTokens(pasted),
         );
       } else if (!insertLargePastePlaceholder(pasted, fileReferences)) {
         buffer.insert(fileReferences, { paste: false });
@@ -915,6 +945,7 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
     await handleClipboardFilePaste(
       clipboardFiles.join('\n'),
       clipboardFiles.map(formatClipboardFileReference).join(' '),
+      clipboardFiles,
     );
   }, [
     handleClipboardFilePaste,
@@ -1166,7 +1197,11 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
         ) {
           // Pasted text is purely image path(s) — promote to attachment chips
           // so Cmd+V (terminal-injected path) matches the Ctrl+V experience.
-          void promotePastedImagePaths(pastedImagePaths.imagePaths, pasted);
+          void promotePastedImagePaths(
+            pastedImagePaths.imagePaths,
+            pasted,
+            pastedImageTokens(pasted),
+          );
         } else if (!insertLargePastePlaceholder(pasted)) {
           // Normal paste handling for small content
           buffer.handleInput(key);

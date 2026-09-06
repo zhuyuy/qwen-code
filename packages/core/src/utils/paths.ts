@@ -349,14 +349,10 @@ export function unescapeShellSpecials(value: string): string {
  *
  * On Windows, backslashes are path separators, not shell escape characters
  * (PowerShell uses backtick, cmd.exe uses caret). Backslash-separated paths
- * are therefore preserved. Generated `@` references use forward-slash
- * absolute Windows paths, which are safe to unescape before parsing.
+ * are therefore preserved. Escaped references are decoded by their consumer.
  */
 export function unescapePath(filePath: string): string {
-  const isForwardSlashWindowsAtReference = /^@(?:[A-Za-z]:\/|\/\/)/.test(
-    filePath,
-  );
-  if (os.platform() === 'win32' && !isForwardSlashWindowsAtReference) {
+  if (os.platform() === 'win32') {
     return filePath;
   }
   return unescapeShellSpecials(filePath);
