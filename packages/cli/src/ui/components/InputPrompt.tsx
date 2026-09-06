@@ -32,13 +32,11 @@ import { keyMatchers, Command } from '../keyMatchers.js';
 import type { CommandContext, SlashCommand } from '../commands/types.js';
 import { parseSlashCommand } from '../commands/commands.js';
 import { StreamingState } from '../types.js';
-import {
-  ApprovalMode,
-  type Config,
-  Storage,
-  createDebugLogger,
-  unescapeShellSpecials,
-} from '@qwen-code/qwen-code-core';
+import { ApprovalMode } from '@qwen-code/qwen-code-core/config/approval-mode.js';
+import type { Config } from '@qwen-code/qwen-code-core/config/config.js';
+import { Storage } from '@qwen-code/qwen-code-core/config/storage.js';
+import { createDebugLogger } from '@qwen-code/qwen-code-core/utils/debugLogger.js';
+import { unescapeShellSpecials } from '@qwen-code/qwen-code-core/utils/paths.js';
 import {
   parseInputForHighlighting,
   buildSegmentsForVisualSlice,
