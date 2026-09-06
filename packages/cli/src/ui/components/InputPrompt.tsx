@@ -50,7 +50,7 @@ import {
   formatClipboardFileReference,
 } from '../utils/clipboardUtils.js';
 import * as path from 'node:path';
-import * as os from 'node:os';
+import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { getClipboardPasteDirectory } from '../utils/clipboard-paste-directory.js';
 import * as fs from 'node:fs/promises';

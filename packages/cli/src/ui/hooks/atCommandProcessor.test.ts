@@ -173,6 +173,34 @@ describe('handleAtCommand', () => {
     expect(result.toolDisplays![0].description).toBe('@file.txt');
   });
 
+  it.each(['\u3000', '\u00a0', '\u2009'])(
+    'reads the exact clipboard filename containing %j, never its prefix sibling',
+    async (whitespace) => {
+      const file = await createTestFile(
+        path.join(testRootDir, `report${whitespace}final.txt`),
+        'INTENDED_FULL_FILE',
+      );
+      await createTestFile(
+        path.join(testRootDir, 'report'),
+        'WRONG_PREFIX_FILE',
+      );
+      const result = await handleAtCommand({
+        query: `inspect ${formatClipboardFileReference(file)}`,
+        config: mockConfig,
+        onDebugMessage: mockOnDebugMessage,
+        messageId: 627,
+        signal: abortController.signal,
+      });
+      expect(result.shouldProceed).toBe(true);
+      expect(JSON.stringify(result.processedQuery)).toContain(
+        'INTENDED_FULL_FILE',
+      );
+      expect(JSON.stringify(result.processedQuery)).not.toContain(
+        'WRONG_PREFIX_FILE',
+      );
+    },
+  );
+
   it.skipIf(process.platform === 'win32')(
     'reads a file symlink through its canonical target type',
     async () => {

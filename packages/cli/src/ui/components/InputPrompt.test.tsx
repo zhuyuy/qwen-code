@@ -6575,6 +6575,18 @@ describe('classifyPastedImagePaths', () => {
     }
   });
 
+  it('unescapes a bare POSIX image path on a mocked POSIX platform', () => {
+    const platformSpy = vi.spyOn(os, 'platform').mockReturnValue('linux');
+    try {
+      expect(classifyPastedImagePaths('/tmp/my\\ image.png')).toEqual({
+        imagePaths: ['/tmp/my image.png'],
+        allImages: true,
+      });
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
   it('unescapes a shell-escaped Unix image path exactly once', () => {
     const platformSpy = vi.spyOn(os, 'platform').mockReturnValue('linux');
 
